@@ -1,0 +1,11 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+dist/*.pdb
+*.png
+!docs/*.png
+assets/*.cfg
+assets/*.txt
+*.zip
