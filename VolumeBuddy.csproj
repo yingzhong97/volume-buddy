@@ -11,7 +11,7 @@
     <RootNamespace>VolumeBuddy</RootNamespace>
     <AssemblyTitle>音量助手</AssemblyTitle>
     <Product>音量助手 VolumeBuddy</Product>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
   </PropertyGroup>
 

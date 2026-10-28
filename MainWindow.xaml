@@ -5,16 +5,23 @@
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         ShowInTaskbar="False" ShowActivated="False"
         Deactivated="Window_Deactivated" ResizeMode="NoResize"
+        UseLayoutRounding="True" SnapsToDevicePixels="True"
         FontFamily="Microsoft YaHei UI" FontSize="13">
 
     <Window.Resources>
-        <!-- 现代滑条样式 -->
+        <!-- ============ 令牌 ============
+             窗口 14 / 卡片 12 / 行 8 / 控件 7
+             内容统一内缩 14，行高亮内缩 6
+        -->
+
+        <!-- 现代滑条 -->
         <Style x:Key="ModernSlider" TargetType="Slider">
-            <Setter Property="Height" Value="28"/>
+            <Setter Property="Height" Value="26"/>
             <Setter Property="IsMoveToPointEnabled" Value="True"/>
             <Setter Property="IsSnapToTickEnabled" Value="False"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Slider">
@@ -36,18 +43,18 @@
                                     <RepeatButton Command="Slider.IncreaseLarge" IsTabStop="False" Focusable="False">
                                         <RepeatButton.Template>
                                             <ControlTemplate TargetType="RepeatButton">
-                                                <Border Background="Transparent" Height="14" VerticalAlignment="Center"/>
+                                                <Border Background="Transparent" Height="20" VerticalAlignment="Center"/>
                                             </ControlTemplate>
                                         </RepeatButton.Template>
                                     </RepeatButton>
                                 </Track.IncreaseRepeatButton>
                                 <Track.Thumb>
-                                    <Thumb Width="20" Height="20">
+                                    <Thumb Width="18" Height="18">
                                         <Thumb.Template>
                                             <ControlTemplate TargetType="Thumb">
                                                 <Grid Background="Transparent">
-                                                    <Ellipse Width="16" Height="16" Fill="{TemplateBinding Foreground}"
-                                                             Stroke="{DynamicResource CardBrush}" StrokeThickness="2.5"/>
+                                                    <Ellipse Width="14" Height="14" Fill="{TemplateBinding Foreground}"
+                                                             Stroke="{DynamicResource ThumbRingBrush}" StrokeThickness="2.5"/>
                                                 </Grid>
                                             </ControlTemplate>
                                         </Thumb.Template>
@@ -60,23 +67,36 @@
             </Setter>
         </Style>
 
-        <Style x:Key="GhostBtn" TargetType="Button">
+        <!-- 图标按钮（标题栏 / 行内静音） -->
+        <Style x:Key="IconBtn" TargetType="Button">
+            <Setter Property="Width" Value="26"/>
+            <Setter Property="Height" Value="26"/>
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Foreground" Value="{DynamicResource SubBrush}"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="FontSize" Value="15"/>
-            <Setter Property="Padding" Value="6,2"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
             <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="6"
-                                Padding="{TemplateBinding Padding}">
+                        <Border x:Name="bd" CornerRadius="7" Background="{TemplateBinding Background}"
+                                RenderTransformOrigin="0.5,0.5">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="bd" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource PressBrush}"/>
+                                <Setter TargetName="bd" Property="RenderTransform">
+                                    <Setter.Value>
+                                        <ScaleTransform ScaleX="0.9" ScaleY="0.9"/>
+                                    </Setter.Value>
+                                </Setter>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -84,18 +104,25 @@
             </Setter>
         </Style>
 
+        <!-- 行内静音：字形与标题栏一致，用透明度表达静音态 -->
+        <Style x:Key="MuteBtn" TargetType="Button" BasedOn="{StaticResource IconBtn}">
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+
         <!-- 胶囊（设置里的模式选择） -->
         <Style x:Key="TabChip" TargetType="RadioButton">
             <Setter Property="Foreground" Value="{DynamicResource SubBrush}"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontSize" Value="12"/>
             <Setter Property="Padding" Value="14,5"/>
-            <Setter Property="Margin" Value="1"/>
+            <Setter Property="Margin" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
-                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="6"
+                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="7"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
@@ -118,22 +145,28 @@
             </Setter>
         </Style>
 
+        <!-- 次级按钮（返回） -->
         <Style x:Key="PillBtn" TargetType="Button">
             <Setter Property="Background" Value="{DynamicResource TabBgBrush}"/>
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
             <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FontSize" Value="12"/>
             <Setter Property="Padding" Value="14,6"/>
             <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="6"
-                                Padding="{TemplateBinding Padding}">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="7"
+                                Padding="{TemplateBinding Padding}" RenderTransformOrigin="0.5,0.5">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Opacity" Value="0.8"/>
+                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource PressBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="bd" Property="Opacity" Value="0.75"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -141,25 +174,62 @@
             </Setter>
         </Style>
 
-        <!-- 图标按钮（静音等） -->
-        <Style x:Key="IconBtn" TargetType="Button">
-            <Setter Property="Width" Value="26"/>
-            <Setter Property="Height" Value="26"/>
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="BorderThickness" Value="0"/>
+        <!-- 勾选框 -->
+        <Style x:Key="ModernCheck" TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Setter Property="Template">
                 <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="bd" CornerRadius="6" Background="{TemplateBinding Background}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
+                    <ControlTemplate TargetType="CheckBox">
+                        <StackPanel Orientation="Horizontal" Background="Transparent">
+                            <Border x:Name="box" Width="18" Height="18" CornerRadius="5"
+                                    BorderThickness="1.5" BorderBrush="{DynamicResource SliderTrackBrush}"
+                                    Background="Transparent" VerticalAlignment="Center">
+                                <TextBlock x:Name="mark" Text="&#xE73E;" FontFamily="Segoe MDL2 Assets"
+                                           FontSize="9" Foreground="White" Visibility="Collapsed"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ContentPresenter Margin="9,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
                         <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="box" Property="Background" Value="{DynamicResource AccentBrush}"/>
+                                <Setter TargetName="box" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                                <Setter TargetName="mark" Property="Visibility" Value="Visible"/>
+                            </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                                <Setter TargetName="box" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 细滚动条 -->
+        <Style TargetType="ScrollBar">
+            <Setter Property="Width" Value="10"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid Background="Transparent">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Border Background="{DynamicResource ScrollThumbBrush}"
+                                                        CornerRadius="3" Width="5" MinHeight="24" Margin="0,2,4,2"
+                                                        HorizontalAlignment="Right"/>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -171,18 +241,29 @@
             <Setter Property="CornerRadius" Value="12"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="BorderBrush" Value="{DynamicResource CardBorderBrush}"/>
-            <Setter Property="Padding" Value="6,14,6,10"/>
+            <Setter Property="Padding" Value="0,13,0,12"/>
         </Style>
         <Style x:Key="SectionTitle" TargetType="TextBlock">
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
-            <Setter Property="Margin" Value="8,0,8,0"/>
+            <Setter Property="Margin" Value="14,0,14,0"/>
         </Style>
         <Style x:Key="SectionDivider" TargetType="Border">
             <Setter Property="Height" Value="1"/>
             <Setter Property="Background" Value="{DynamicResource DividerBrush}"/>
-            <Setter Property="Margin" Value="8,10,8,8"/>
+            <Setter Property="Margin" Value="14,9,14,0"/>
+        </Style>
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="{DynamicResource SubBrush}"/>
+            <Setter Property="Margin" Value="0,0,0,7"/>
+        </Style>
+        <Style x:Key="BodyNote" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="LineHeight" Value="19"/>
+            <Setter Property="Foreground" Value="{DynamicResource SubBrush}"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
         </Style>
     </Window.Resources>
 
@@ -208,17 +289,21 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock x:Name="TitleText" Text="音量助手" FontSize="14" FontWeight="SemiBold"
-                               Foreground="{DynamicResource TextBrush}" Margin="20,16,0,12"
-                               VerticalAlignment="Center"/>
-                    <TextBlock x:Name="HintText" Grid.Column="1" Text="" FontSize="11"
-                               Foreground="{DynamicResource SubBrush}" VerticalAlignment="Center"
-                               Margin="12,0,0,2"/>
-                    <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="0,10,12,8">
-                        <Button x:Name="BtnSettings" Style="{StaticResource GhostBtn}" Content="&#xE713;"
-                                FontFamily="Segoe MDL2 Assets" Click="BtnSettings_Click" ToolTip="设置"/>
-                        <Button x:Name="BtnClose" Style="{StaticResource GhostBtn}" Content="&#xE8BB;"
-                                FontFamily="Segoe MDL2 Assets" Click="BtnClose_Click" ToolTip="隐藏"/>
+
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="18,15,0,11">
+                        <TextBlock x:Name="TitleText" Text="音量助手" FontSize="15" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextBrush}" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="HintText" Text="" FontSize="11"
+                                   Foreground="{DynamicResource SubBrush}" VerticalAlignment="Center"
+                                   Margin="10,1,0,0"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"
+                                Margin="0,0,12,0">
+                        <Button x:Name="BtnSettings" Style="{StaticResource IconBtn}" Content="&#xE713;"
+                                Width="28" Height="28" Click="BtnSettings_Click" ToolTip="设置"/>
+                        <Button x:Name="BtnClose" Style="{StaticResource IconBtn}" Content="&#xE8BB;"
+                                Width="28" Height="28" Margin="2,0,0,0" Click="BtnClose_Click" ToolTip="隐藏"/>
                     </StackPanel>
                 </Grid>
 
@@ -243,13 +328,14 @@
                                 <TextBlock Text="输出设备" Style="{StaticResource SectionTitle}"/>
                                 <Border Style="{StaticResource SectionDivider}"/>
                             </StackPanel>
-                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                            <ScrollViewer Grid.Row="1" Margin="6,7,6,0" VerticalScrollBarVisibility="Auto"
                                           HorizontalScrollBarVisibility="Disabled">
-                                <StackPanel x:Name="PlayDevices" Margin="4,0,4,0"/>
+                                <StackPanel x:Name="PlayDevices"/>
                             </ScrollViewer>
-                            <StackPanel Grid.Row="2" Margin="0,10,0,0">
-                                <TextBlock Text="空间音效" Style="{StaticResource SectionTitle}"/>
-                                <WrapPanel x:Name="SpatialChips" Margin="8,0,4,0"/>
+                            <StackPanel Grid.Row="2" Margin="0,12,0,0">
+                                <Border Style="{StaticResource SectionDivider}" Margin="14,0,14,0"/>
+                                <TextBlock Text="空间音效" Style="{StaticResource SectionTitle}" Margin="14,11,14,0"/>
+                                <WrapPanel x:Name="SpatialChips" Margin="14,7,8,0"/>
                             </StackPanel>
                         </Grid>
                     </Border>
@@ -265,9 +351,9 @@
                                 <TextBlock Text="输入设备" Style="{StaticResource SectionTitle}"/>
                                 <Border Style="{StaticResource SectionDivider}"/>
                             </StackPanel>
-                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                            <ScrollViewer Grid.Row="1" Margin="6,7,6,0" VerticalScrollBarVisibility="Auto"
                                           HorizontalScrollBarVisibility="Disabled">
-                                <StackPanel x:Name="RecDevices" Margin="4,0,4,0"/>
+                                <StackPanel x:Name="RecDevices"/>
                             </ScrollViewer>
                         </Grid>
                     </Border>
@@ -283,22 +369,29 @@
                                 <TextBlock x:Name="MixHint" Text="应用音量" Style="{StaticResource SectionTitle}"/>
                                 <Border Style="{StaticResource SectionDivider}"/>
                             </StackPanel>
-                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                            <ScrollViewer Grid.Row="1" Margin="6,7,6,0" VerticalScrollBarVisibility="Auto"
                                           HorizontalScrollBarVisibility="Disabled">
-                                <StackPanel x:Name="MixApps" Margin="4,0,4,0"/>
+                                <StackPanel x:Name="MixApps"/>
                             </ScrollViewer>
                         </Grid>
                     </Border>
 
                     <!-- 设置浮层 -->
                     <Border x:Name="SettingsOverlay" Grid.ColumnSpan="5" Visibility="Collapsed"
-                            CornerRadius="10" Background="{DynamicResource CardBrush}">
-                        <StackPanel Margin="26,20,26,20">
+                            CornerRadius="12" Background="{DynamicResource CardBrush}">
+                        <Border.RenderTransform>
+                            <ScaleTransform x:Name="SettingsScale" ScaleX="1" ScaleY="1"/>
+                        </Border.RenderTransform>
+                        <Border.RenderTransformOrigin>0.5,0.5</Border.RenderTransformOrigin>
+                        <StackPanel MaxWidth="520" Margin="32,0,32,0"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center">
                             <TextBlock Text="设置" FontSize="16" FontWeight="SemiBold"
-                                       Foreground="{DynamicResource TextBrush}" Margin="0,0,0,14"/>
-                            <TextBlock Text="打开方式" Foreground="{DynamicResource SubBrush}" FontSize="11"
-                                       Margin="0,0,0,6"/>
-                            <Border Background="{DynamicResource TabBgBrush}" CornerRadius="8" Padding="3"
+                                       Foreground="{DynamicResource TextBrush}"/>
+                            <TextBlock Text="面板默认贴托盘弹出，也可改成常驻的独立窗口。" Margin="0,5,0,0"
+                                       Style="{StaticResource BodyNote}"/>
+
+                            <TextBlock Text="打开方式" Margin="0,24,0,7" Style="{StaticResource FieldLabel}"/>
+                            <Border Background="{DynamicResource TabBgBrush}" CornerRadius="9" Padding="3"
                                     HorizontalAlignment="Left">
                                 <StackPanel Orientation="Horizontal">
                                     <RadioButton x:Name="ModeTray" GroupName="mode" Content="托盘弹出"
@@ -307,13 +400,15 @@
                                                  Style="{StaticResource TabChip}" Checked="Mode_Changed"/>
                                 </StackPanel>
                             </Border>
-                            <CheckBox x:Name="ChkAutoStart" Content="开机自动启动" Margin="0,16,0,0"
-                                      Foreground="{DynamicResource TextBrush}" Checked="AutoStart_Changed"
+
+                            <CheckBox x:Name="ChkAutoStart" Content="开机自动启动" Margin="0,20,0,0"
+                                      Style="{StaticResource ModernCheck}" Checked="AutoStart_Changed"
                                       Unchecked="AutoStart_Changed"/>
-                            <TextBlock Foreground="{DynamicResource SubBrush}" FontSize="11" TextWrapping="Wrap"
-                                       Margin="0,16,0,0" MaxWidth="560" HorizontalAlignment="Left"
-                                       Text="提示：点击「隐藏」或关闭窗口会收起面板，左键点托盘图标随时呼出；要完全退出请在托盘图标右键菜单选择「退出」。"/>
-                            <Button Content="返回" Margin="0,18,0,0" HorizontalAlignment="Left"
+
+                            <TextBlock Margin="0,20,0,0" Style="{StaticResource BodyNote}"
+                                       Text="点击「隐藏」或关闭面板只是收起，左键点托盘图标随时呼出；要完全退出请在托盘图标右键菜单里选择「退出」。"/>
+
+                            <Button Content="返回" Margin="0,24,0,0" HorizontalAlignment="Left"
                                     Click="BtnBack_Click" Style="{StaticResource PillBtn}"/>
                         </StackPanel>
                     </Border>

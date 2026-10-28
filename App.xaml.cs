@@ -14,8 +14,43 @@ namespace VolumeBuddy
         public static MainWindow EnsureWindow()
         {
             if (_window != null) return _window;
-            _window = new MainWindow();
-            return _window;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var w = new MainWindow();
+            sw.Stop();
+            w.Closed += (s, e) => { if (ReferenceEquals(_window, w)) _window = null; };
+            _window = w;
+            Log("window built in " + sw.ElapsedMilliseconds + " ms");
+            return w;
+        }
+
+        static void Log(string msg)
+        {
+            try
+            {
+                System.IO.File.AppendAllText(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "volumebuddy_ui.log"),
+                    DateTime.Now.ToString("HH:mm:ss.fff") + " " + msg + "\r\n");
+            }
+            catch { }
+        }
+
+        [System.Runtime.InteropServices.DllImport("psapi.dll")]
+        static extern bool EmptyWorkingSet(IntPtr hProcess);
+
+        /// <summary>把工作集交还系统（页面进 standby，热数据再取回是软缺页）。</summary>
+        public static void TrimWorkingSet()
+        {
+            try
+            {
+                using (var p = System.Diagnostics.Process.GetCurrentProcess())
+                {
+                    long before = p.WorkingSet64 / 1024 / 1024;
+                    bool ok = EmptyWorkingSet(p.Handle);
+                    p.Refresh();
+                    long after = p.WorkingSet64 / 1024 / 1024;
+                    Log("trim " + (ok ? "ok" : "fail") + " " + before + "MB -> " + after + "MB");
+                }
+            }
+            catch (Exception ex) { Log("trim exception " + ex.Message); }
         }
 
         public static void CrashLog(string source, Exception ex)
@@ -68,11 +103,14 @@ namespace VolumeBuddy
             }
             catch { }
 
-            // 调试用：--shot=<png路径> 渲染一张界面截图后退出
+            // 调试用：--shot=<png路径> 渲染一张界面截图后退出（--shotsettings= 附带设置浮层）
             var shotArg = e.Args.FirstOrDefault(a => a.StartsWith("--shot="));
-            if (shotArg != null)
+            var shotSettingsArg = e.Args.FirstOrDefault(a => a.StartsWith("--shotsettings="));
+            if (shotArg != null || shotSettingsArg != null)
             {
-                EnsureWindow().CaptureTo(shotArg.Substring("--shot=".Length));
+                var target = shotArg != null ? shotArg.Substring("--shot=".Length)
+                                             : shotSettingsArg.Substring("--shotsettings=".Length);
+                EnsureWindow().CaptureTo(target, shotSettingsArg != null);
                 return;
             }
 

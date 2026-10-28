@@ -23,6 +23,9 @@ namespace VolumeBuddy
     {
         AppSettings _settings;
         readonly DispatcherTimer _uiTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
+        // 字段持有，别用局部变量：局部 DispatcherTimer 可能还没 tick 就被回收
+        readonly DispatcherTimer _trimTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        Microsoft.Win32.UserPreferenceChangedEventHandler _prefHandler;
 
         // 行缓存，避免每 500ms 重建导致闪烁和拖动冲突
         readonly Dictionary<string, DeviceRow> _playRows = new Dictionary<string, DeviceRow>();
@@ -47,12 +50,13 @@ namespace VolumeBuddy
             ApplyWindowMode();
 
             _uiTimer.Tick += (s, e) => RefreshAll();
-            SourceInitialized += (s, e) => EnableAcrylic();
-            Microsoft.Win32.SystemEvents.UserPreferenceChanged += (s, e) =>
+            _trimTimer.Tick += (s, e) => { _trimTimer.Stop(); App.TrimWorkingSet(); };
+            _prefHandler = (s, e) =>
             {
                 if (e.Category == Microsoft.Win32.UserPreferenceCategory.General)
                     Dispatcher.Invoke(() => ApplyTheme(ThemeHelper.IsDark()));
             };
+            Microsoft.Win32.SystemEvents.UserPreferenceChanged += _prefHandler;
 
             try
             {
@@ -66,11 +70,13 @@ namespace VolumeBuddy
 
         void ApplyTheme(bool dark)
         {
-            Color WindowBg() => dark ? Color.FromArgb(0xE0, 0x20, 0x22, 0x26) : Color.FromArgb(0xE6, 0xF7, 0xF8, 0xFA);
+            // 注意：这里必须是**不透明**色。窗口用的是 AllowsTransparency + WPF 圆角，
+            // 一旦允许桌面透出（或叠加亚克力/模糊），露出的那一层会按窗口矩形填充，圆角就变成直角。
+            Color WindowBg() => dark ? Color.FromRgb(0x20, 0x22, 0x26) : Color.FromRgb(0xF7, 0xF8, 0xFA);
             var res = Resources;
             res["BgBrush"] = new SolidColorBrush(WindowBg());
             res["CardBrush"] = new SolidColorBrush(dark ? Color.FromRgb(0x2D, 0x30, 0x35) : Colors.White);
-            res["TabBgBrush"] = new SolidColorBrush(dark ? Color.FromRgb(0x26, 0x28, 0x2C) : Color.FromRgb(0xEC, 0xEE, 0xF1));
+            res["TabBgBrush"] = new SolidColorBrush(dark ? Color.FromRgb(0x24, 0x26, 0x2A) : Color.FromRgb(0xE9, 0xEB, 0xEE));
             res["TextBrush"] = new SolidColorBrush(dark ? Colors.White : Color.FromRgb(0x1B, 0x1B, 0x1B));
             res["SubBrush"] = new SolidColorBrush(dark ? Color.FromRgb(0xA6, 0xAC, 0xB5) : Color.FromRgb(0x5F, 0x66, 0x70));
             res["AccentBrush"] = new SolidColorBrush(Color.FromRgb(0x00, 0x78, 0xD4));
@@ -79,31 +85,19 @@ namespace VolumeBuddy
             res["WindowBorderBrush"] = new SolidColorBrush(dark ? Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF) : Color.FromArgb(0x44, 0x00, 0x00, 0x00));
             res["CardBorderBrush"] = new SolidColorBrush(dark ? Color.FromArgb(0x16, 0xFF, 0xFF, 0xFF) : Color.FromArgb(0x12, 0x00, 0x00, 0x00));
             res["DividerBrush"] = new SolidColorBrush(dark ? Color.FromArgb(0x1A, 0xFF, 0xFF, 0xFF) : Color.FromArgb(0x10, 0x00, 0x00, 0x00));
-            res["RowActiveBrush"] = new SolidColorBrush(dark ? Color.FromRgb(0x2C, 0x31, 0x38) : Color.FromRgb(0xF0, 0xF4, 0xF9));
+            res["RowActiveBrush"] = new SolidColorBrush(dark ? Color.FromRgb(0x2F, 0x35, 0x3D) : Color.FromRgb(0xEA, 0xF1, 0xFA));
+            res["PressBrush"] = new SolidColorBrush(dark ? Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF) : Color.FromArgb(0x1F, 0x00, 0x00, 0x00));
+            res["ScrollThumbBrush"] = new SolidColorBrush(dark ? Color.FromArgb(0x59, 0xFF, 0xFF, 0xFF) : Color.FromArgb(0x47, 0x00, 0x00, 0x00));
+            // 滑块拇指的描边：深色下用卡片色，浅色下用白，保证与所在背景分离
+            res["ThumbRingBrush"] = new SolidColorBrush(dark ? Color.FromRgb(0x2D, 0x30, 0x35) : Colors.White);
         }
 
         // ================= 亚克力背景 =================
-
-        [DllImport("user32.dll")] static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WinCompAttrData data);
-        [StructLayout(LayoutKind.Sequential)] struct AccentPolicy { public int State; public int Flags; public uint GradientColor; public int AnimationId; }
-        [StructLayout(LayoutKind.Sequential)] struct WinCompAttrData { public int Attribute; public IntPtr Data; public int SizeOfData; }
-
-        void EnableAcrylic()
-        {
-            try
-            {
-                var hwnd = new WindowInteropHelper(this).Handle;
-                bool dark = ThemeHelper.IsDark();
-                uint tint = dark ? 0xB4222226u : 0xC8F3F6FAu; // AABBGGRR
-                var accent = new AccentPolicy { State = 4 /*ACRYLICBLURBEHIND*/, Flags = 2, GradientColor = tint };
-                IntPtr ptr = Marshal.AllocHGlobal(Marshal.SizeOf(accent));
-                Marshal.StructureToPtr(accent, ptr, false);
-                var data = new WinCompAttrData { Attribute = 19, Data = ptr, SizeOfData = Marshal.SizeOf(accent) };
-                SetWindowCompositionAttribute(hwnd, ref data);
-                Marshal.FreeHGlobal(ptr);
-            }
-            catch { }
-        }
+        // 已停用：SetWindowCompositionAttribute 的亚克力会把整个窗口矩形涂满（含圆角外侧的四个角），
+        // 于是屏幕上看是直角。WPF 自己画的圆角是带 alpha 的（截图验证过），所以只要背景不透明，
+        // 圆角就能正确显示。0xE6 的透光量本来也几乎看不出模糊，去掉后观感几乎不变。
+        // 若以后想恢复磨砂，正确做法是改用 DWMWA_SYSTEMBACKDROP_TYPE + DwmSetWindowAttribute(33, ROUND)，
+        // 由 DWM 负责裁剪，别再叠加 SetWindowCompositionAttribute。
 
         // ================= 托盘 =================
 
@@ -148,35 +142,53 @@ namespace VolumeBuddy
         void AnimateIn()
         {
             StopAnimations();
-            var dur = TimeSpan.FromMilliseconds(190);
-            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-            BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, dur) { EasingFunction = ease });
-            PanelScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.96, 1, dur) { EasingFunction = ease });
-            PanelScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.96, 1, dur) { EasingFunction = ease });
-            PanelOffset.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(14, 0, dur) { EasingFunction = ease });
+            var dur = TimeSpan.FromMilliseconds(200);
+            var ease = new PowerEase { Power = 3, EasingMode = EasingMode.EaseOut };
+            // 动画打在内容层上，不要动 Window.Opacity：对分层窗口逐帧改整体 alpha 会让
+            // WPF 反复重建渲染表面，反复开关面板时内存只涨不跌
+            var fade = new DoubleAnimation(0, 1, dur) { EasingFunction = ease };
+            var slide = new DoubleAnimation(10, 0, dur) { EasingFunction = ease };
+            var popX = new DoubleAnimation(0.965, 1, dur) { EasingFunction = ease };
+            var popY = new DoubleAnimation(0.965, 1, dur) { EasingFunction = ease };
+            // 帧率上限 180fps：给足刷新率上限，动画跟屏走
+            Timeline.SetDesiredFrameRate(fade, 180);
+            Timeline.SetDesiredFrameRate(slide, 180);
+            Timeline.SetDesiredFrameRate(popX, 180);
+            Timeline.SetDesiredFrameRate(popY, 180);
+            InnerBorder.BeginAnimation(OpacityProperty, fade);
+            PanelOffset.BeginAnimation(TranslateTransform.YProperty, slide);
+            PanelScale.BeginAnimation(ScaleTransform.ScaleXProperty, popX);
+            PanelScale.BeginAnimation(ScaleTransform.ScaleYProperty, popY);
         }
 
-        /// <summary>向下淡出后隐藏。</summary>
+        /// <summary>向下淡出后隐藏（退出比入场快，不让人等）。</summary>
         void AnimateOut(Action onDone)
         {
             _closing = true;
-            var dur = TimeSpan.FromMilliseconds(140);
-            var ease = new CubicEase { EasingMode = EasingMode.EaseIn };
+            var dur = TimeSpan.FromMilliseconds(120);
+            var ease = new QuadraticEase { EasingMode = EasingMode.EaseOut };
             var fade = new DoubleAnimation(1, 0, dur) { EasingFunction = ease };
+            var slide = new DoubleAnimation(0, 6, dur) { EasingFunction = ease };
+            var popX = new DoubleAnimation(1, 0.985, dur) { EasingFunction = ease };
+            var popY = new DoubleAnimation(1, 0.985, dur) { EasingFunction = ease };
+            Timeline.SetDesiredFrameRate(fade, 180);
+            Timeline.SetDesiredFrameRate(slide, 180);
+            Timeline.SetDesiredFrameRate(popX, 180);
+            Timeline.SetDesiredFrameRate(popY, 180);
             fade.Completed += (s2, e2) => { _closing = false; onDone(); };
-            BeginAnimation(OpacityProperty, fade);
-            PanelScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1, 0.97, dur) { EasingFunction = ease });
-            PanelScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1, 0.97, dur) { EasingFunction = ease });
-            PanelOffset.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0, 10, dur) { EasingFunction = ease });
+            InnerBorder.BeginAnimation(OpacityProperty, fade);
+            PanelOffset.BeginAnimation(TranslateTransform.YProperty, slide);
+            PanelScale.BeginAnimation(ScaleTransform.ScaleXProperty, popX);
+            PanelScale.BeginAnimation(ScaleTransform.ScaleYProperty, popY);
         }
 
         void StopAnimations()
         {
-            BeginAnimation(OpacityProperty, null);
+            InnerBorder.BeginAnimation(OpacityProperty, null);
             PanelScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
             PanelScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
             PanelOffset.BeginAnimation(TranslateTransform.YProperty, null);
-            Opacity = 1;
+            InnerBorder.Opacity = 1;
             PanelScale.ScaleX = PanelScale.ScaleY = 1;
             PanelOffset.Y = 0;
         }
@@ -210,13 +222,22 @@ namespace VolumeBuddy
                 }
 
                 if (!IsVisible) Show();
+                if (!_envLogged)
+                {
+                    _envLogged = true;
+                    var dpiInfo = VisualTreeHelper.GetDpi(this);
+                    UiLog("env renderTier=" + (RenderCapability.Tier >> 16) +
+                          " dpiScale=" + dpiInfo.DpiScaleX.ToString("0.##") +
+                          " gcHeap=" + (GC.GetTotalMemory(false) / 1024 / 1024) + "MB");
+                }
                 _shownAt = DateTime.UtcNow;
                 AnimateIn();            // 关键：每次显示都重置透明度并播放入场动画
                 ForceForeground();
                 _uiTimer.Start();
                 RefreshAll();
                 RefreshSpatial();
-                UiLog("ShowPanel done visible=" + IsVisible + " opacity=" + Opacity);
+                UiLog("ShowPanel done visible=" + IsVisible + " opacity=" + Opacity +
+                      " rect=" + (int)Left + "," + (int)Top + "," + (int)Width + "x" + (int)Height);
             }
             catch (Exception ex)
             {
@@ -224,11 +245,15 @@ namespace VolumeBuddy
             }
         }
 
-        [DllImport("psapi.dll")]
-        static extern bool EmptyWorkingSet(IntPtr hProcess);
-
         [DllImport("user32.dll")]
         static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        protected override void OnClosed(EventArgs e)
+        {
+            _uiTimer.Stop();
+            try { Microsoft.Win32.SystemEvents.UserPreferenceChanged -= _prefHandler; } catch { }
+            base.OnClosed(e);
+        }
 
         [StructLayout(LayoutKind.Sequential)]
         struct APPBARDATA
@@ -283,17 +308,25 @@ namespace VolumeBuddy
             {
                 Hide();
                 _uiTimer.Stop();
-                // 托盘待命时修剪工作集，降低内存占用
+                // 收起时放掉会话与设备句柄（COM 原生内存），并修剪工作集
                 try
                 {
-                    using (var p = Process.GetCurrentProcess())
-                        EmptyWorkingSet(p.Handle);
+                    foreach (var r in _appRows.Values) r.App = null;   // 句柄即将释放，别留着被误用
+                    AudioSessionService.Release(_currentSessions);
+                    _currentSessions.Clear();
+                    _playDevices.Clear();
+                    _recDevices.Clear();
                 }
                 catch { }
+                // 延迟 400ms 再修剪：收起动画刚结束时还有一批释放/终结动作在跑，
+                // 立刻 trim 会把"正在变脏"的页留在工作集里
+                _trimTimer.Stop();
+                _trimTimer.Start();
             });
         }
 
         bool _shotMode;
+        bool _envLogged;
 
         DateTime _shownAt = DateTime.MinValue;
 
@@ -308,13 +341,14 @@ namespace VolumeBuddy
         }
 
         /// <summary>调试用：把当前界面渲染成 PNG 后退出。</summary>
-        public void CaptureTo(string path)
+        public void CaptureTo(string path, bool withSettings = false)
         {
             _shotMode = true;
             Show();
             UpdateLayout();
             RefreshAll();
             RefreshSpatial();
+            if (withSettings) ShowSettings();
             // 等空间音效异步读取完成后再截图
             var shotTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2000) };
             shotTimer.Tick += (s2, e2) =>
@@ -480,7 +514,6 @@ namespace VolumeBuddy
             public System.Windows.Controls.Button MuteBtn;
             public bool Dragging;
             public SolidColorBrush BgBrush;
-            public DropShadowEffect Shadow;
             public TranslateTransform Offset;
             public bool IsDefault;
         }
@@ -538,8 +571,7 @@ namespace VolumeBuddy
                     if (!VolumeWriter.HasPending(d.Id) && !RecentlySet(d.Id, row.Slider.Value) &&
                         Math.Abs(row.Slider.Value - d.Volume * 100) > 0.5) row.Slider.Value = d.Volume * 100;
                     row.Percent.ShowText(Math.Round(d.Volume * 100) + "%");
-                    row.MuteBtn.Content = d.Muted ? "🔇" : "🔊";
-                    row.MuteBtn.Opacity = d.Muted ? 1.0 : 0.55;
+                    SetMuteVisual(row.MuteBtn, d.Muted);
                     _suppressSliderEcho = false;
                 }
             }
@@ -559,24 +591,30 @@ namespace VolumeBuddy
             }
         }
 
-        /// <summary>设置设备行的高亮（默认设备带卡片背景和柔和阴影）。</summary>
+        /// <summary>设置设备行的高亮：默认设备铺一层淡色底，其余透明（不再整体降透明度，避免文字发灰）。</summary>
         void SetRowActive(DeviceRow row, bool active, bool animate)
         {
-            var dur = TimeSpan.FromMilliseconds(200);
             Color bgColor = active ? ((SolidColorBrush)Resources["RowActiveBrush"]).Color : Colors.Transparent;
-            double opacity = active ? 1.0 : 0.85;
 
             if (!animate)
             {
                 row.BgBrush.Color = bgColor;
-                row.Card.Opacity = opacity;
                 return;
             }
-            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+            var ease = new PowerEase { Power = 2, EasingMode = EasingMode.EaseOut };
             row.BgBrush.BeginAnimation(SolidColorBrush.ColorProperty,
-                new ColorAnimation(bgColor, dur) { EasingFunction = ease });
-            row.Card.BeginAnimation(OpacityProperty,
-                new DoubleAnimation(opacity, dur) { EasingFunction = ease });
+                new ColorAnimation(bgColor, TimeSpan.FromMilliseconds(180)) { EasingFunction = ease });
+        }
+
+        // Segoe MDL2 图标（与标题栏图标同一套字形，别用彩色 emoji）
+        const string GlyphVolume = "\uE767";
+        const string GlyphMute = "\uE74F";
+        const string GlyphSpeaker = "\uE767";
+
+        static void SetMuteVisual(System.Windows.Controls.Button btn, bool muted)
+        {
+            btn.Content = muted ? GlyphMute : GlyphVolume;
+            btn.Opacity = muted ? 1.0 : 0.55;
         }
 
         DeviceRow BuildDeviceRow(StackPanel panel, DeviceInfo d, bool isPlay)
@@ -587,23 +625,23 @@ namespace VolumeBuddy
                 Text = d.Name,
                 FontWeight = FontWeights.Medium,
                 TextWrapping = TextWrapping.Wrap,
-                LineHeight = 17,
-                MaxHeight = 36,      // 最多两行
+                LineHeight = 18,
+                MaxHeight = 38,      // 最多两行
             };
             nameText.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush");
             var badge = new Border
             {
                 Background = (Brush)Resources["AccentBrush"],
-                CornerRadius = new CornerRadius(6),
-                Padding = new Thickness(6, 1, 6, 1),
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(5, 1, 5, 1),
                 Child = new TextBlock { Text = "默认", FontSize = 10, Foreground = Brushes.White },
-                VerticalAlignment = VerticalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Top,
                 Visibility = Visibility.Collapsed,
             };
             var nameArea = new Grid();
             nameArea.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             nameArea.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            badge.Margin = new Thickness(6, 0, 0, 0);
+            badge.Margin = new Thickness(6, 2, 0, 0);
             Grid.SetColumn(nameText, 0);
             Grid.SetColumn(badge, 1);
             nameArea.Children.Add(nameText);
@@ -618,15 +656,15 @@ namespace VolumeBuddy
 
             var muteBtn = new System.Windows.Controls.Button
             {
-                Content = "🔊",
-                Style = (Style)Resources["IconBtn"],
+                Content = GlyphVolume,
+                Style = (Style)Resources["MuteBtn"],
+                Opacity = 0.55,
             };
             muteBtn.Click += (s, e) =>
             {
-                bool mute = (string)muteBtn.Content == "🔊";
+                bool mute = !Equals(muteBtn.Content, GlyphMute);
                 VolumeWriter.SetMute(d.Id, mute);
-                muteBtn.Content = mute ? "🔇" : "🔊";
-                muteBtn.Opacity = mute ? 1.0 : 0.55;
+                SetMuteVisual(muteBtn, mute);
             };
 
             var slider = new Slider { Minimum = 0, Maximum = 100, Style = (Style)Resources["ModernSlider"], Value = d.Volume * 100 };
@@ -679,13 +717,12 @@ namespace VolumeBuddy
             stack.Children.Add(bottom);
 
             row.BgBrush = new SolidColorBrush(Colors.Transparent);
-            row.Shadow = new DropShadowEffect { Opacity = 0 };
             row.Offset = new TranslateTransform();
             row.Card = new Border
             {
                 Background = row.BgBrush,
                 CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(8, 7, 8, 7),
+                Padding = new Thickness(8, 6, 8, 6),
                 Margin = new Thickness(0, 0, 0, 4),
                 RenderTransform = row.Offset,
                 Child = stack,
@@ -765,9 +802,8 @@ namespace VolumeBuddy
                 }
 
                 row.App = app;   // 每次刷新替换为最新句柄
-                row.Card.Opacity = app.Active ? 1.0 : 0.62;
-                row.MuteBtn.Content = app.Muted ? "🔇" : "🔊";
-                row.MuteBtn.Opacity = app.Muted ? 1.0 : 0.55;
+                row.Card.Opacity = app.Active ? 1.0 : 0.68;
+                SetMuteVisual(row.MuteBtn, app.Muted);
                 if (!row.Dragging)
                 {
                     _suppressSliderEcho = true;
@@ -782,9 +818,33 @@ namespace VolumeBuddy
         {
             var row = new AppRow();
 
-            var icon = new Image { Width = 20, Height = 20, VerticalAlignment = VerticalAlignment.Center };
             var iconSrc = TryGetAppIcon(app.Pid, app.ExePath);
-            if (iconSrc != null) icon.Source = iconSrc;
+            var icon = new Border
+            {
+                Width = 20,
+                Height = 20,
+                CornerRadius = new CornerRadius(5),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            if (iconSrc != null)
+            {
+                icon.Child = new Image { Source = iconSrc, Stretch = Stretch.Uniform };
+            }
+            else
+            {
+                // 没有可读图标（如“系统声音”）也占住同一块位置，保证各行文字左边缘对齐
+                icon.SetResourceReference(Border.BackgroundProperty, "TabBgBrush");
+                var glyph = new TextBlock
+                {
+                    Text = GlyphSpeaker,
+                    FontFamily = new FontFamily("Segoe MDL2 Assets"),
+                    FontSize = 10,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                glyph.SetResourceReference(TextBlock.ForegroundProperty, "SubBrush");
+                icon.Child = glyph;
+            }
 
             var nameText = new TextBlock
             {
@@ -808,15 +868,15 @@ namespace VolumeBuddy
 
             var muteBtn = new System.Windows.Controls.Button
             {
-                Content = "🔊",
-                Style = (Style)Resources["IconBtn"],
+                Content = GlyphVolume,
+                Style = (Style)Resources["MuteBtn"],
+                Opacity = 0.55,
             };
             muteBtn.Click += (s, e) =>
             {
-                bool mute = (string)muteBtn.Content == "🔊";
+                bool mute = !Equals(muteBtn.Content, GlyphMute);
                 if (row.App != null) AudioSessionService.SetMute(row.App, mute);
-                muteBtn.Content = mute ? "🔇" : "🔊";
-                muteBtn.Opacity = mute ? 1.0 : 0.55;
+                SetMuteVisual(muteBtn, mute);
             };
 
             slider.AddHandler(Thumb.DragStartedEvent, (RoutedEventHandler)((s, e) => { row.Dragging = true; _dragCount++; }), true);
@@ -839,7 +899,7 @@ namespace VolumeBuddy
             top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             Grid.SetColumn(icon, 0);
             Grid.SetColumn(nameText, 1);
-            nameText.Margin = new Thickness(6, 0, 0, 0);
+            nameText.Margin = new Thickness(8, 0, 0, 0);
             Grid.SetColumn(percent.Host, 2);
             Grid.SetColumn(muteBtn, 3);
             top.Children.Add(icon);
@@ -859,7 +919,7 @@ namespace VolumeBuddy
             {
                 Background = appBg,
                 CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(8, 7, 8, 7),
+                Padding = new Thickness(8, 6, 8, 6),
                 Margin = new Thickness(0, 0, 0, 4),
                 Child = stack,
             };
@@ -891,8 +951,12 @@ namespace VolumeBuddy
                             using (var ico = System.Drawing.Icon.ExtractAssociatedIcon(path))
                             {
                                 if (ico != null)
+                                {
                                     src = Imaging.CreateBitmapSourceFromHIcon(ico.Handle, Int32Rect.Empty,
                                         BitmapSizeOptions.FromEmptyOptions());
+                                    // 冻结后 WPF 渲染时不用为每帧复制一份位图
+                                    if (src.CanFreeze) src.Freeze();
+                                }
                             }
                         }
                     }
@@ -930,25 +994,62 @@ namespace VolumeBuddy
             {
                 bool active = string.Equals(f.Guid, _spatialState, StringComparison.OrdinalIgnoreCase) ||
                               (f.Guid == "" && string.IsNullOrEmpty(_spatialState));
+
+                var scale = new ScaleTransform(1, 1);
+                // 每个芯片用自己的画刷副本：ResourceDictionary 里的画刷是已冻结的，不能做 ColorAnimation
+                Color accentColor = ((SolidColorBrush)Resources["AccentBrush"]).Color;
+                Color idleColor = ((SolidColorBrush)Resources["TabBgBrush"]).Color;
+                Color hoverColor = ((SolidColorBrush)Resources["PressBrush"]).Color;
+                var chipBg = new SolidColorBrush(active ? accentColor : idleColor);
+
                 var chip = new Border
                 {
-                    CornerRadius = new CornerRadius(15),
-                    Padding = new Thickness(14, 5, 14, 5),
-                    Margin = new Thickness(0, 0, 8, 8),
+                    CornerRadius = new CornerRadius(14),
+                    Padding = new Thickness(13, 5, 13, 5),
+                    Margin = new Thickness(0, 0, 7, 7),
                     Cursor = Cursors.Hand,
-                    Background = active ? (Brush)Resources["AccentBrush"] : (Brush)Resources["CardBrush"],
+                    RenderTransform = scale,
+                    RenderTransformOrigin = new Point(0.5, 0.5),
+                    Background = chipBg,
                 };
-                chip.BorderThickness = new Thickness(0);
                 if (active)
-                    chip.Effect = new DropShadowEffect { BlurRadius = 14, ShadowDepth = 2, Direction = 270, Opacity = 0.28, Color = Color.FromRgb(0x00, 0x78, 0xD4) };
-                else
                 {
-                    chip.SetResourceReference(Border.BorderBrushProperty, "SliderTrackBrush");
-                    chip.BorderThickness = new Thickness(1);
+                    // 选中态只用极轻的投影提示层次，不做光晕
+                    chip.Effect = new DropShadowEffect
+                    {
+                        BlurRadius = 10,
+                        ShadowDepth = 1,
+                        Direction = 270,
+                        Opacity = 0.18,
+                        Color = Color.FromRgb(0x00, 0x78, 0xD4),
+                    };
                 }
+
                 var tb = new TextBlock { Text = f.Name, FontSize = 12 };
                 tb.Foreground = active ? Brushes.White : (Brush)Resources["TextBrush"];
+                if (active) tb.FontWeight = FontWeights.Medium;
                 chip.Child = tb;
+
+                if (!active)
+                {
+                    chip.MouseEnter += (s, e) =>
+                        chipBg.BeginAnimation(SolidColorBrush.ColorProperty,
+                            new ColorAnimation(hoverColor, TimeSpan.FromMilliseconds(110)));
+                    chip.MouseLeave += (s, e) =>
+                        chipBg.BeginAnimation(SolidColorBrush.ColorProperty,
+                            new ColorAnimation(idleColor, TimeSpan.FromMilliseconds(110)));
+                }
+
+                // 按下反馈：缩到 0.96，松开回弹
+                chip.MouseLeftButtonDown += (s, e) => { scale.ScaleX = scale.ScaleY = 0.96; };
+                chip.MouseLeftButtonUp += (s, e) =>
+                {
+                    var ease = new PowerEase { Power = 3, EasingMode = EasingMode.EaseOut };
+                    scale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.96, 1, TimeSpan.FromMilliseconds(140)) { EasingFunction = ease });
+                    scale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.96, 1, TimeSpan.FromMilliseconds(140)) { EasingFunction = ease });
+                };
+                chip.MouseLeave += (s, e) => { scale.ScaleX = scale.ScaleY = 1; };
+
                 var guid = f.Guid;
                 chip.MouseLeftButtonUp += (s, e) =>
                 {
@@ -976,8 +1077,24 @@ namespace VolumeBuddy
         }
 
         void BtnSettings_Click(object sender, RoutedEventArgs e) => ShowSettings();
-        void ShowSettings() { SettingsOverlay.Visibility = Visibility.Visible; }
-        void BtnBack_Click(object sender, RoutedEventArgs e) => SettingsOverlay.Visibility = Visibility.Collapsed;
+
+        void ShowSettings()
+        {
+            var dur = TimeSpan.FromMilliseconds(170);
+            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+            SettingsOverlay.Visibility = Visibility.Visible;
+            SettingsOverlay.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, dur) { EasingFunction = ease });
+            SettingsScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.985, 1, dur) { EasingFunction = ease });
+            SettingsScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.985, 1, dur) { EasingFunction = ease });
+        }
+
+        void BtnBack_Click(object sender, RoutedEventArgs e)
+        {
+            var dur = TimeSpan.FromMilliseconds(110);
+            var fade = new DoubleAnimation(1, 0, dur) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } };
+            fade.Completed += (s2, e2) => SettingsOverlay.Visibility = Visibility.Collapsed;
+            SettingsOverlay.BeginAnimation(OpacityProperty, fade);
+        }
 
         void Mode_Changed(object sender, RoutedEventArgs e)
         {

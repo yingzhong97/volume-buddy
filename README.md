@@ -5,7 +5,7 @@
 ## 下载
 
 前往 [Releases](https://github.com/yingzhong97/volume-buddy/releases/latest) 下载
-`VolumeBuddy-v1.0-win-x64.zip`，解压后双击 `VolumeBuddy.exe` 即可。
+`VolumeBuddy-v1.1-win-x64.zip`，解压后双击 `VolumeBuddy.exe` 即可。
 
 运行需要 [.NET 8 桌面运行时](https://dotnet.microsoft.com/download/dotnet/8.0/runtime/desktop)（Windows 11 一般已自带）。
 
@@ -16,7 +16,7 @@
 - **空间音效**：自动检测本机可用的空间音效格式（关闭 / Windows Sonic / 杜比全景声 / DTS），一键切换
 - **应用音量**：类似系统音量合成器，每个正在发声的应用可单独调音量、单独静音
 - **界面**：Win11 风格横向三分区，跟随系统深浅色；托盘弹出带淡入/收起动画，面板贴任务栏上方，不遮挡托盘图标
-- **轻量**：托盘待命时停止全部轮询，工作集自动收缩；主程序约 200KB（依赖系统已装的 .NET 8 桌面运行时）
+- **轻量**：托盘待命时停止全部轮询、把工作集交还系统（常驻约 6–12MB）；主程序约 220KB（依赖系统已装的 .NET 8 桌面运行时）
 
 ## 使用
 

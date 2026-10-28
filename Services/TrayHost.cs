@@ -13,6 +13,7 @@ namespace VolumeBuddy.Services
     public static class TrayHost
     {
         static System.Windows.Forms.NotifyIcon _tray;
+        static DispatcherTimer _warmTrim;   // 用字段持有，局部 timer 可能还没 tick 就被回收
 
         public static void Init()
         {
@@ -56,6 +57,10 @@ namespace VolumeBuddy.Services
             {
                 t.Stop();
                 try { App.EnsureWindow(); } catch { }
+                // 预热完成后把工作集交还系统：开机自启时不会一直挂着 100MB 常驻
+                _warmTrim = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2500) };
+                _warmTrim.Tick += (s2, e2) => { _warmTrim.Stop(); App.TrimWorkingSet(); };
+                _warmTrim.Start();
             };
             t.Start();
         }
