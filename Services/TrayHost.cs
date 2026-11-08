@@ -13,7 +13,11 @@ namespace VolumeBuddy.Services
     public static class TrayHost
     {
         static System.Windows.Forms.NotifyIcon _tray;
-        static DispatcherTimer _warmTrim;   // 用字段持有，局部 timer 可能还没 tick 就被回收
+        static DispatcherTimer _warmTimer;   // 用字段持有，局部 timer 可能还没 tick 就被回收
+        static long _lastToggleTick;
+
+        /// <summary>最近一次左键按下托盘图标的时刻（TickCount64），供失焦隐藏判定使用。</summary>
+        public static long LastTrayInteractionAt { get; private set; }
 
         public static void Init()
         {
@@ -23,10 +27,17 @@ namespace VolumeBuddy.Services
                 Visible = true,
                 Icon = MakeIcon(),
             };
-            _tray.MouseClick += (s, e) =>
+            // 用 MouseDown 而不是 MouseClick：左键按下托盘图标时面板会立刻失焦，
+            // 若等到抬键才切换，失焦自动隐藏已经先跑一步——轻则这次点击被吞掉（关闭慢半拍），
+            // 重则隐藏完成后点击才到达、读到 IsVisible=false 又走「显示」分支，面板自己弹回来。
+            _tray.MouseDown += (s, e) =>
             {
-                if (e.Button == System.Windows.Forms.MouseButtons.Left)
-                    TogglePanel();
+                if (e.Button != System.Windows.Forms.MouseButtons.Left) return;
+                LastTrayInteractionAt = Environment.TickCount64;
+                long now = Environment.TickCount64;
+                if (now - _lastToggleTick < 90) return;   // 过滤同一次物理点击的重复消息
+                _lastToggleTick = now;
+                TogglePanel();
             };
 
             var menu = new System.Windows.Forms.ContextMenuStrip();
@@ -40,29 +51,30 @@ namespace VolumeBuddy.Services
         public static void ShowPanel(bool settings)
         {
             var win = App.EnsureWindow();
+            win.CancelDeferredHide();
             win.ShowFromTray(settings);
         }
 
         public static void TogglePanel()
         {
             var win = App.EnsureWindow();
-            if (win.IsVisible) win.HideFromTray(); else win.ShowFromTray(false);
+            win.CancelDeferredHide();     // 撤销失焦安排的延迟隐藏，本次点击说了算
+            // 用显式状态判断，不用 IsVisible：消息排队/退出动画期间它会短暂与用户意图不一致
+            if (win.PanelIsOpen) win.HideFromTray(); else win.ShowFromTray(false);
         }
 
         /// <summary>空闲预热：后台创建窗口但不显示，让第一次点开没有冷启动感。</summary>
         public static void WarmupLater()
         {
-            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
-            t.Tick += (s, e) =>
+            _warmTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
+            _warmTimer.Tick += (s, e) =>
             {
-                t.Stop();
+                _warmTimer.Stop();
                 try { App.EnsureWindow(); } catch { }
-                // 预热完成后把工作集交还系统：开机自启时不会一直挂着 100MB 常驻
-                _warmTrim = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2500) };
-                _warmTrim.Tick += (s2, e2) => { _warmTrim.Stop(); App.TrimWorkingSet(); };
-                _warmTrim.Start();
+                // 预热后不再立刻 EmptyWorkingSet：刚预热好的热页被换出，第一次点开反而更卡。
+                // 内存修剪统一交给 MainWindow 的「空闲 60 秒」计时器。
             };
-            t.Start();
+            _warmTimer.Start();
         }
 
         public static void Exit()

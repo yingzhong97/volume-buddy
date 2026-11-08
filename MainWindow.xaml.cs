@@ -24,7 +24,10 @@ namespace VolumeBuddy
         AppSettings _settings;
         readonly DispatcherTimer _uiTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
         // 字段持有，别用局部变量：局部 DispatcherTimer 可能还没 tick 就被回收
-        readonly DispatcherTimer _trimTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        // 内存修剪只在长时间空闲时做；原先收起后 400ms 就 trim，快速开关会反复软缺页卡顿
+        readonly DispatcherTimer _trimTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
+        // 失焦后延迟确认再隐藏，避免托盘点击带来的失焦与点击事件互相抢状态
+        readonly DispatcherTimer _deferredHideTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
         Microsoft.Win32.UserPreferenceChangedEventHandler _prefHandler;
 
         // 行缓存，避免每 500ms 重建导致闪烁和拖动冲突
@@ -50,7 +53,28 @@ namespace VolumeBuddy
             ApplyWindowMode();
 
             _uiTimer.Tick += (s, e) => RefreshAll();
-            _trimTimer.Tick += (s, e) => { _trimTimer.Stop(); App.TrimWorkingSet(); };
+            _trimTimer.Tick += (s, e) =>
+            {
+                _trimTimer.Stop();
+                // 面板确实收起且空闲够久才交还工作集；开关面板期间一律不 trim
+                if (!PanelIsOpen && !IsVisible) App.TrimWorkingSet();
+            };
+            _deferredHideTimer.Tick += (s, e) =>
+            {
+                _deferredHideTimer.Stop();
+                if (_shotMode || !PanelIsOpen || !IsVisible || IsActive) return;
+                if (_settings.Mode != "tray") return;
+                // 刚弹出时常常还没真正拿到前台权限，等过保护期再确认
+                if ((DateTime.UtcNow - _shownAt).TotalMilliseconds < 450)
+                {
+                    _deferredHideTimer.Start();
+                    return;
+                }
+                // 按下托盘图标本身会让面板失焦，这次失焦不该再补一刀，开关交给托盘点击处理
+                if (Environment.TickCount64 - TrayHost.LastTrayInteractionAt < 250) return;
+                UiLog("deferred deactivate -> hide");
+                HideToTray();
+            };
             _prefHandler = (s, e) =>
             {
                 if (e.Category == Microsoft.Win32.UserPreferenceCategory.General)
@@ -64,6 +88,8 @@ namespace VolumeBuddy
                 UiLog("window created in " + (int)since.TotalMilliseconds + " ms");
             }
             catch { }
+            // 预热后窗口一直没显示也能回收内存，但留足 60 秒，别影响刚启动时的第一次点开
+            _trimTimer.Start();
         }
 
         // ================= 主题 =================
@@ -103,6 +129,16 @@ namespace VolumeBuddy
 
         // ================= 显示 / 隐藏 =================
 
+        /// <summary>
+        /// 面板的「意图状态」：开始显示立刻置 true，开始收起立刻置 false。
+        /// 不能用 IsVisible 代替——消息排队或动画期间它会短暂与用户意图不一致，
+        /// 托盘点击就会读到旧状态，出现「关不掉」或「关掉又弹回来」。
+        /// </summary>
+        public bool PanelIsOpen { get; private set; }
+
+        /// <summary>撤销失焦安排的延迟隐藏；托盘点击的优先级更高。</summary>
+        public void CancelDeferredHide() { _deferredHideTimer.Stop(); }
+
         void ApplyWindowMode()
         {
             bool trayMode = _settings.Mode != "window";
@@ -118,8 +154,6 @@ namespace VolumeBuddy
 
         public void HideFromTray() { HideToTray(); }
 
-        bool _closing;
-
         static void UiLog(string msg)
         {
             try
@@ -133,23 +167,23 @@ namespace VolumeBuddy
 
         void TogglePanel()
         {
-            if (_closing) return;                 // 正在收起（多由失焦触发），忽略这次点击
-            if (IsVisible) HideToTray();
+            CancelDeferredHide();
+            if (PanelIsOpen) HideToTray();
             else ShowPanel();
         }
 
-        /// <summary>从下方淡入并轻微放大（托盘右上弹出感）。</summary>
+        /// <summary>从下方淡入并放大（托盘弹出感）。动画只负责视觉，不参与开关状态判断。</summary>
         void AnimateIn()
         {
             StopAnimations();
-            var dur = TimeSpan.FromMilliseconds(200);
+            var dur = TimeSpan.FromMilliseconds(210);
             var ease = new PowerEase { Power = 3, EasingMode = EasingMode.EaseOut };
             // 动画打在内容层上，不要动 Window.Opacity：对分层窗口逐帧改整体 alpha 会让
             // WPF 反复重建渲染表面，反复开关面板时内存只涨不跌
             var fade = new DoubleAnimation(0, 1, dur) { EasingFunction = ease };
-            var slide = new DoubleAnimation(10, 0, dur) { EasingFunction = ease };
-            var popX = new DoubleAnimation(0.965, 1, dur) { EasingFunction = ease };
-            var popY = new DoubleAnimation(0.965, 1, dur) { EasingFunction = ease };
+            var slide = new DoubleAnimation(18, 0, dur) { EasingFunction = ease };
+            var popX = new DoubleAnimation(0.955, 1, dur) { EasingFunction = ease };
+            var popY = new DoubleAnimation(0.955, 1, dur) { EasingFunction = ease };
             // 帧率上限 180fps：给足刷新率上限，动画跟屏走
             Timeline.SetDesiredFrameRate(fade, 180);
             Timeline.SetDesiredFrameRate(slide, 180);
@@ -161,21 +195,23 @@ namespace VolumeBuddy
             PanelScale.BeginAnimation(ScaleTransform.ScaleYProperty, popY);
         }
 
-        /// <summary>向下淡出后隐藏（退出比入场快，不让人等）。</summary>
+        /// <summary>
+        /// 向下淡出后隐藏。状态在点击瞬间就已置为「收起」，动画期间 IsVisible 仍是 true
+        /// 也不会误判：托盘再点一次会立刻取消本动画并重播入场。
+        /// </summary>
         void AnimateOut(Action onDone)
         {
-            _closing = true;
-            var dur = TimeSpan.FromMilliseconds(120);
+            var dur = TimeSpan.FromMilliseconds(160);
             var ease = new QuadraticEase { EasingMode = EasingMode.EaseOut };
             var fade = new DoubleAnimation(1, 0, dur) { EasingFunction = ease };
-            var slide = new DoubleAnimation(0, 6, dur) { EasingFunction = ease };
-            var popX = new DoubleAnimation(1, 0.985, dur) { EasingFunction = ease };
-            var popY = new DoubleAnimation(1, 0.985, dur) { EasingFunction = ease };
+            var slide = new DoubleAnimation(0, 12, dur) { EasingFunction = ease };
+            var popX = new DoubleAnimation(1, 0.975, dur) { EasingFunction = ease };
+            var popY = new DoubleAnimation(1, 0.975, dur) { EasingFunction = ease };
             Timeline.SetDesiredFrameRate(fade, 180);
             Timeline.SetDesiredFrameRate(slide, 180);
             Timeline.SetDesiredFrameRate(popX, 180);
             Timeline.SetDesiredFrameRate(popY, 180);
-            fade.Completed += (s2, e2) => { _closing = false; onDone(); };
+            fade.Completed += (s, e) => onDone();
             InnerBorder.BeginAnimation(OpacityProperty, fade);
             PanelOffset.BeginAnimation(TranslateTransform.YProperty, slide);
             PanelScale.BeginAnimation(ScaleTransform.ScaleXProperty, popX);
@@ -197,7 +233,8 @@ namespace VolumeBuddy
         {
             try
             {
-                UiLog("ShowPanel enter closing=" + _closing + " visible=" + IsVisible);
+                CancelDeferredHide();
+                UiLog("ShowPanel enter open=" + PanelIsOpen + " visible=" + IsVisible);
                 ApplyWindowMode();
 
                 var wa = SystemParameters.WorkArea;
@@ -222,6 +259,8 @@ namespace VolumeBuddy
                 }
 
                 if (!IsVisible) Show();
+                PanelIsOpen = true;      // 先定状态，后续失焦/动画都不会误判
+                ++_animSeq;              // 作废上一轮退出动画的完成回调
                 if (!_envLogged)
                 {
                     _envLogged = true;
@@ -234,8 +273,15 @@ namespace VolumeBuddy
                 AnimateIn();            // 关键：每次显示都重置透明度并播放入场动画
                 ForceForeground();
                 _uiTimer.Start();
-                RefreshAll();
-                RefreshSpatial();
+                _trimTimer.Stop();
+                // 先让窗口上屏，再把耗时的 WASAPI 枚举/会话刷新排到空闲时执行，
+                // 避免点击后 UI 线程被同步枚举占住，出现「点一下卡一下」
+                Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle, new Action(() =>
+                {
+                    if (!PanelIsOpen) return;
+                    RefreshAll();
+                    RefreshSpatial();
+                }));
                 UiLog("ShowPanel done visible=" + IsVisible + " opacity=" + Opacity +
                       " rect=" + (int)Left + "," + (int)Top + "," + (int)Width + "x" + (int)Height);
             }
@@ -250,7 +296,10 @@ namespace VolumeBuddy
 
         protected override void OnClosed(EventArgs e)
         {
+            PanelIsOpen = false;
             _uiTimer.Stop();
+            _deferredHideTimer.Stop();
+            _trimTimer.Stop();
             try { Microsoft.Win32.SystemEvents.UserPreferenceChanged -= _prefHandler; } catch { }
             base.OnClosed(e);
         }
@@ -300,15 +349,23 @@ namespace VolumeBuddy
             catch { }
         }
 
+        int _animSeq;   // 每次开关自增，让被取消的旧动画完成回调自动失效
+
         void HideToTray()
         {
-            UiLog("HideToTray visible=" + IsVisible + " closing=" + _closing);
-            if (!IsVisible || _closing) return;
-            AnimateOut(() =>
+            CancelDeferredHide();
+            UiLog("HideToTray open=" + PanelIsOpen + " visible=" + IsVisible);
+            if (!PanelIsOpen) return;                // 已收起：可能正在播退出动画，不重播
+            PanelIsOpen = false;                    // 意图立刻生效，动画期间再点托盘会立刻重开
+            int seq = ++_animSeq;
+            _uiTimer.Stop();
+            _trimTimer.Stop();
+            _trimTimer.Start();                     // 空闲 60 秒后才交还工作集
+            // COM 句柄释放放到空闲时做：不占用 UI 线程，下一次点击不用排队。
+            // 只看状态不看 IsVisible——退出动画期间窗口还可见，但已经与 UI 无关了。
+            Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() =>
             {
-                Hide();
-                _uiTimer.Stop();
-                // 收起时放掉会话与设备句柄（COM 原生内存），并修剪工作集
+                if (PanelIsOpen) return;
                 try
                 {
                     foreach (var r in _appRows.Values) r.App = null;   // 句柄即将释放，别留着被误用
@@ -318,10 +375,13 @@ namespace VolumeBuddy
                     _recDevices.Clear();
                 }
                 catch { }
-                // 延迟 400ms 再修剪：收起动画刚结束时还有一批释放/终结动作在跑，
-                // 立刻 trim 会把"正在变脏"的页留在工作集里
-                _trimTimer.Stop();
-                _trimTimer.Start();
+            }));
+            AnimateOut(() =>
+            {
+                if (seq != _animSeq || PanelIsOpen) return;   // 用户中途又打开了面板
+                Hide();
+                StopAnimations();                             // 复位变换，下次入场从干净状态开始
+                UiLog("AnimateOut done -> hidden");
             });
         }
 
@@ -332,12 +392,13 @@ namespace VolumeBuddy
 
         void Window_Deactivated(object sender, EventArgs e)
         {
-            if (_shotMode || _closing) return;
+            if (_shotMode || !PanelIsOpen) return;
             if (_settings.Mode != "tray") return;
-            // 刚弹出时常常还没真正拿到前台权限，此时失焦事件不算数
-            if ((DateTime.UtcNow - _shownAt).TotalMilliseconds < 450) { UiLog("deactivated ignored (grace)"); return; }
-            UiLog("deactivated -> hide");
-            HideToTray();
+            // 延迟确认：按下托盘图标本身会让面板失焦，这次失焦不能决定开关状态，
+            // 托盘点击已在 MouseDown 同步完成切换，并会取消这个计时器；
+            // 点击其它窗口时，120ms 后由计时器真正收起面板。
+            _deferredHideTimer.Stop();
+            _deferredHideTimer.Start();
         }
 
         /// <summary>调试用：把当前界面渲染成 PNG 后退出。</summary>
