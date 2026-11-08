@@ -28,6 +28,10 @@ namespace VolumeBuddy
         readonly DispatcherTimer _trimTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
         // 失焦后延迟确认再隐藏，避免托盘点击带来的失焦与点击事件互相抢状态
         readonly DispatcherTimer _deferredHideTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+        // 预热时「无感显示一帧」的收尾计时器：让 WPF 先把分层窗口的合成表面建好
+        readonly DispatcherTimer _primeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+        bool _primed;
+        bool _primeShowing;
         Microsoft.Win32.UserPreferenceChangedEventHandler _prefHandler;
 
         // 行缓存，避免每 500ms 重建导致闪烁和拖动冲突
@@ -38,6 +42,13 @@ namespace VolumeBuddy
         List<AppSessionInfo> _currentSessions = new List<AppSessionInfo>();
         List<DeviceInfo> _playDevices = new List<DeviceInfo>();
         List<DeviceInfo> _recDevices = new List<DeviceInfo>();
+        // 设备显示顺序（按 Id 记录）。切换默认设备时只把新默认抽到最前，其余项整体下移，
+        // 相对顺序保持不变；不再每 800ms 用不稳定的 Sort 重洗列表。
+        readonly List<string> _playOrder = new List<string>();
+        readonly List<string> _recOrder = new List<string>();
+        // 刚点击切换、系统还没回读到的默认设备：先按用户意图排序，不用等下一次轮询
+        string _pendingPlayDefault, _pendingRecDefault;
+        DateTime _pendingPlayAt, _pendingRecAt;
         string _spatialState = "";
         bool _spatialBusy;
         readonly Dictionary<int, ImageSource> _iconCache = new Dictionary<int, ImageSource>();
@@ -56,9 +67,10 @@ namespace VolumeBuddy
             _trimTimer.Tick += (s, e) =>
             {
                 _trimTimer.Stop();
-                // 面板确实收起且空闲够久才交还工作集；开关面板期间一律不 trim
-                if (!PanelIsOpen && !IsVisible) App.TrimWorkingSet();
+                // 面板确实收起且空闲够久才交还工作集；开关面板/预热一帧期间一律不 trim
+                if (!PanelIsOpen && !IsVisible && !_primeShowing) App.TrimWorkingSet();
             };
+            _primeTimer.Tick += (s, e) => FinishPrimeShow();
             _deferredHideTimer.Tick += (s, e) =>
             {
                 _deferredHideTimer.Stop();
@@ -88,8 +100,73 @@ namespace VolumeBuddy
                 UiLog("window created in " + (int)since.TotalMilliseconds + " ms");
             }
             catch { }
+            // 关键：在构造阶段就把 HWND 建好。否则第一次 Show() 时才创建 HWND，
+            // ShowPanel 里的 DPI 换算会拿到兜底值 1.0，首次弹出的位置和后续不一致。
+            try { new WindowInteropHelper(this).EnsureHandle(); }
+            catch (Exception ex) { UiLog("EnsureHandle " + ex.Message); }
+
             // 预热后窗口一直没显示也能回收内存，但留足 60 秒，别影响刚启动时的第一次点开
             _trimTimer.Start();
+        }
+
+        /// <summary>
+        /// 空闲预热：把 HWND、布局、设备行和分层窗口的合成表面都在用户点击之前建好。
+        /// 「无感显示一帧」是重点——WPF 的合成表面和字体/模板缓存只在 Show 之后才真正分配，
+        /// 放到预热里做，第一次点击就和后续点击走同一条路径。
+        /// </summary>
+        public void Warmup()
+        {
+            if (_primed || PanelIsOpen) return;
+            _primed = true;
+            try { UpdateLayout(); }
+            catch (Exception ex) { UiLog("warmup layout " + ex.Message); }
+
+            try
+            {
+                _primeShowing = true;
+                IsHitTestVisible = false;       // 这一帧不吃鼠标
+                InnerBorder.Opacity = 0;        // 内容层全透明，窗口本身也不会露出来
+                if (_settings.Mode == "tray") PositionNearTray();
+                Show();                         // ShowActivated=False / ShowInTaskbar=False，不抢焦点
+                ApplyNativePosition();
+                UpdateLayout();
+                RefreshAll();                   // 预建设备行 + 预热 WASAPI/会话枚举的 JIT 与缓存
+                _primeTimer.Start();
+                UiLog("warmup prime frame");
+            }
+            catch (Exception ex)
+            {
+                UiLog("warmup prime EXCEPTION " + ex);
+                FinishPrimeShow();
+            }
+        }
+
+        /// <summary>结束预热的一帧无感显示；ShowPanel 开头也会调用，避免极快点击被这帧 Hide 掉。</summary>
+        void FinishPrimeShow()
+        {
+            if (!_primeShowing) return;
+            _primeShowing = false;
+            _primeTimer.Stop();
+            try { if (IsVisible) Hide(); } catch { }
+            IsHitTestVisible = true;
+            InnerBorder.Opacity = 1;
+        }
+
+        /// <summary>
+        /// 鼠标悬停托盘时调用：把 60 秒空闲修剪换出的热页提前取回（软缺页不发生在点击那一瞬）。
+        /// 之后重新计时，空闲够久仍会再交还工作集，常驻内存不变。
+        /// </summary>
+        public void TouchHotSet()
+        {
+            if (PanelIsOpen || _primeShowing || _shotMode) return;
+            try
+            {
+                UpdateLayout();
+                RefreshAll();
+                _trimTimer.Stop();
+                _trimTimer.Start();
+            }
+            catch (Exception ex) { UiLog("touch hot set " + ex.Message); }
         }
 
         // ================= 主题 =================
@@ -233,32 +310,25 @@ namespace VolumeBuddy
         {
             try
             {
+                FinishPrimeShow();      // 预热的无感一帧还没结束时用户就点了：先收尾，别让它把面板 Hide 掉
                 CancelDeferredHide();
                 UiLog("ShowPanel enter open=" + PanelIsOpen + " visible=" + IsVisible);
                 ApplyWindowMode();
 
-                var wa = SystemParameters.WorkArea;
                 if (_settings.Mode == "tray")
                 {
-                    // 贴任务栏上沿（不遮挡托盘图标），水平方向跟随鼠标并贴边
-                    var pos = System.Windows.Forms.Cursor.Position;
-                    var src = PresentationSource.FromVisual(this);
-                    double dpiX = src?.CompositionTarget.TransformFromDevice.M11 ?? 1.0;
-                    double cx = pos.X * dpiX;
-                    double left = cx + 56 - Width;
-                    left = Math.Min(Math.Max(left, wa.Left + 8), wa.Right - Width - 8);
-                    Left = left;
-                    // 任务栏自动隐藏时，工作区底部就是屏幕底部，需额外抬高，避免遮住弹出的托盘图标
-                    double lift = IsTaskbarAutoHide() ? 60 : 8;
-                    Top = wa.Bottom - Height - lift;
+                    PositionNearTray();
                 }
                 else
                 {
+                    _hasTargetPos = false;   // 独立窗口模式由 WPF 居中，不需要物理坐标兜底
+                    var wa = SystemParameters.WorkArea;
                     Left = wa.Left + (wa.Width - Width) / 2;
                     Top = wa.Top + (wa.Height - Height) / 2;
                 }
 
                 if (!IsVisible) Show();
+                ApplyNativePosition();   // Show() 可能按 WPF 自己的 DPI 再应用一次 Left/Top，收尾钉回物理坐标
                 PanelIsOpen = true;      // 先定状态，后续失焦/动画都不会误判
                 ++_animSeq;              // 作废上一轮退出动画的完成回调
                 if (!_envLogged)
@@ -291,6 +361,126 @@ namespace VolumeBuddy
             }
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        struct POINT { public int X, Y; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct MONITORINFO
+        {
+            public int cbSize;
+            public RECT rcMonitor;
+            public RECT rcWork;
+            public uint dwFlags;
+        }
+
+        [DllImport("user32.dll")]
+        static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+        [DllImport("shcore.dll")]
+        static extern int GetDpiForMonitor(IntPtr hMonitor, int dpiType, out uint dpiX, out uint dpiY);
+
+        [DllImport("user32.dll")]
+        static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+        [DllImport("user32.dll")]
+        static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+                                        int x, int y, int cx, int cy, uint flags);
+
+        const uint MONITOR_DEFAULTTONEAREST = 2;
+        const int MDT_EFFECTIVE_DPI = 0;
+        const uint SWP_NOSIZE = 0x0001, SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010;
+
+        int _targetLeftPx, _targetTopPx;
+        bool _hasTargetPos;
+
+        /// <summary>
+        /// 贴任务栏上沿定位。几何运算全部在物理像素里完成，DPI 只取自「光标所在显示器」
+        /// （GetDpiForMonitor），不取 PresentationSource —— 后者在首次 Show 之前可能为 null，
+        /// 正是以前「第一次弹出的位置和后续不一致」的根因。
+        /// 工作区同样取光标所在显示器，多屏/缩放下也不会被主屏边界夹回来。
+        /// </summary>
+        void PositionNearTray()
+        {
+            var pos = System.Windows.Forms.Cursor.Position;   // 物理像素
+            var hMon = MonitorFromPoint(new POINT { X = pos.X, Y = pos.Y }, MONITOR_DEFAULTTONEAREST);
+            var mi = new MONITORINFO { cbSize = Marshal.SizeOf(typeof(MONITORINFO)) };
+            bool hasMon = hMon != IntPtr.Zero && GetMonitorInfo(hMon, ref mi);
+
+            double sx = 1, sy = 1;      // DIP / 物理像素
+            uint dx = 96, dy = 96;
+            bool gotDpi = false;
+            try { gotDpi = hasMon && GetDpiForMonitor(hMon, MDT_EFFECTIVE_DPI, out dx, out dy) >= 0 && dx > 0 && dy > 0; }
+            catch { }                   // 老系统没有 shcore.dll 时退回 PresentationSource
+            if (gotDpi)
+            {
+                sx = 96.0 / dx; sy = 96.0 / dy;
+            }
+            else
+            {
+                var src = PresentationSource.FromVisual(this);
+                double a = src?.CompositionTarget.TransformFromDevice.M11 ?? 0;
+                double b = src?.CompositionTarget.TransformFromDevice.M22 ?? 0;
+                if (a > 0 && b > 0) { sx = a; sy = b; }
+            }
+
+            // 窗口实际物理尺寸直接问 HWND，隐藏状态下也有效，完全绕开 WPF 的 DIP 换算差异
+            double wDip = Width, hDip = Height;
+            if (double.IsNaN(wDip) || wDip <= 0) wDip = 1000;
+            if (double.IsNaN(hDip) || hDip <= 0) hDip = 620;
+            double wPx = wDip / sx, hPx = hDip / sy;
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd != IntPtr.Zero && GetWindowRect(hwnd, out var rc))
+            {
+                double rw = rc.Right - rc.Left, rh = rc.Bottom - rc.Top;
+                if (rw > 0 && rh > 0) { wPx = rw; hPx = rh; }
+            }
+
+            double workLeft, workTop, workRight, workBottom;
+            if (hasMon)
+            {
+                workLeft = mi.rcWork.Left; workTop = mi.rcWork.Top;
+                workRight = mi.rcWork.Right; workBottom = mi.rcWork.Bottom;
+            }
+            else
+            {
+                var wa = SystemParameters.WorkArea;   // DIP，仅作兜底
+                workLeft = wa.Left / sx; workTop = wa.Top / sy;
+                workRight = wa.Right / sx; workBottom = wa.Bottom / sy;
+            }
+
+            double gapX = 8 / sx, gapY = 8 / sy;
+            double leftPx = pos.X + 56 - wPx;      // 面板右缘落在光标右侧 56 物理像素处
+            double minX = workLeft + gapX;
+            double maxX = Math.Max(minX, workRight - wPx - gapX);
+            leftPx = Math.Min(Math.Max(leftPx, minX), maxX);
+
+            // 任务栏自动隐藏时工作区底部就是屏幕底，需额外抬高，避免遮住弹出的托盘图标
+            double liftPx = (IsTaskbarAutoHide() ? 60 : 8) / sy;
+            double topPx = workBottom - hPx - liftPx;
+            double minY = workTop + gapY;
+            double maxY = Math.Max(minY, workBottom - hPx - gapY);
+            topPx = Math.Min(Math.Max(topPx, minY), maxY);
+
+            Left = leftPx * sx;         // 同步 WPF 的内部状态（拖动标题栏时要用）
+            Top = topPx * sy;
+            _targetLeftPx = (int)Math.Round(leftPx);
+            _targetTopPx = (int)Math.Round(topPx);
+            _hasTargetPos = true;
+            ApplyNativePosition();     // 最终位置用物理像素钉死，不受窗口当前 DPI 影响
+        }
+
+        void ApplyNativePosition()
+        {
+            if (!_hasTargetPos) return;
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero) return;
+            SetWindowPos(hwnd, IntPtr.Zero, _targetLeftPx, _targetTopPx, 0, 0,
+                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
         [DllImport("user32.dll")]
         static extern bool SetForegroundWindow(IntPtr hWnd);
 
@@ -300,6 +490,7 @@ namespace VolumeBuddy
             _uiTimer.Stop();
             _deferredHideTimer.Stop();
             _trimTimer.Stop();
+            _primeTimer.Stop();
             try { Microsoft.Win32.SystemEvents.UserPreferenceChanged -= _prefHandler; } catch { }
             base.OnClosed(e);
         }
@@ -443,6 +634,45 @@ namespace VolumeBuddy
 
         string _lastPlayDef;
 
+        /// <summary>系统回读还没跟上时用刚点击的设备顶一会儿；2 秒后无论成功与否都以系统值为准。</summary>
+        static string ResolveDefault(string systemDefault, ref string pending, ref DateTime pendingAt)
+        {
+            if (pending == null) return systemDefault;
+            if (string.Equals(systemDefault, pending, StringComparison.OrdinalIgnoreCase) ||
+                (DateTime.UtcNow - pendingAt).TotalMilliseconds > 2000)
+            {
+                pending = null;
+                return systemDefault;
+            }
+            return pending;
+        }
+
+        /// <summary>
+        /// 基于上一次的显示顺序重排：下线设备移除、新设备追加到末尾；
+        /// 默认设备只把自己从当前位置抽出来插到最前，其余项依次下移、相对顺序不变。
+        /// </summary>
+        static List<DeviceInfo> StableOrder(List<DeviceInfo> fresh, List<string> order)
+        {
+            var byId = new Dictionary<string, DeviceInfo>(StringComparer.OrdinalIgnoreCase);
+            foreach (var d in fresh) byId[d.Id] = d;
+
+            order.RemoveAll(id => !byId.ContainsKey(id));
+            foreach (var d in fresh)
+                if (!order.Contains(d.Id)) order.Add(d.Id);
+
+            var def = fresh.FirstOrDefault(d => d.IsDefault);
+            if (def != null)
+            {
+                int at = order.FindIndex(id => string.Equals(id, def.Id, StringComparison.OrdinalIgnoreCase));
+                if (at > 0) { order.RemoveAt(at); order.Insert(0, def.Id); }
+            }
+
+            var result = new List<DeviceInfo>(order.Count);
+            foreach (var id in order)
+                if (byId.TryGetValue(id, out var d)) result.Add(d);
+            return result;
+        }
+
         int _dragCount;
         // 用户刚改过音量的设备：短时间内不用系统读值覆盖滑条，避免回弹
         readonly Dictionary<string, (DateTime at, double value)> _recentSet =
@@ -462,8 +692,10 @@ namespace VolumeBuddy
             {
                 string playDef = AudioService.GetDefaultDeviceId(EDataFlow.eRender);
                 string recDef = AudioService.GetDefaultDeviceId(EDataFlow.eCapture);
-                _playDevices = AudioService.GetDevices(EDataFlow.eRender, playDef);
-                _recDevices = AudioService.GetDevices(EDataFlow.eCapture, recDef);
+                playDef = ResolveDefault(playDef, ref _pendingPlayDefault, ref _pendingPlayAt);
+                recDef = ResolveDefault(recDef, ref _pendingRecDefault, ref _pendingRecAt);
+                _playDevices = StableOrder(AudioService.GetDevices(EDataFlow.eRender, playDef), _playOrder);
+                _recDevices = StableOrder(AudioService.GetDevices(EDataFlow.eCapture, recDef), _recOrder);
                 UpdateDevicePanel(PlayDevices, _playRows, _playDevices, true);
                 UpdateDevicePanel(RecDevices, _recRows, _recDevices, false);
 
@@ -589,7 +821,9 @@ namespace VolumeBuddy
                 if (kv.Value.Card.Parent != panel) continue;
                 kv.Value.Offset.BeginAnimation(TranslateTransform.YProperty, null);
                 kv.Value.Offset.Y = 0;
-                oldTops[kv.Key] = kv.Value.Card.TransformToAncestor(panel).Transform(new Point(0, 0)).Y;
+                // 预热/悬停时窗口是隐藏的，坐标换算可能不可用；取不到就不做位移动画即可
+                try { oldTops[kv.Key] = kv.Value.Card.TransformToAncestor(panel).Transform(new Point(0, 0)).Y; }
+                catch { }
             }
 
             // 移除已消失的设备行
@@ -643,7 +877,9 @@ namespace VolumeBuddy
             {
                 if (kv.Value.Card.Parent != panel) continue;
                 if (!oldTops.TryGetValue(kv.Key, out double oldY)) continue;
-                double newY = kv.Value.Card.TransformToAncestor(panel).Transform(new Point(0, 0)).Y;
+                double newY;
+                try { newY = kv.Value.Card.TransformToAncestor(panel).Transform(new Point(0, 0)).Y; }
+                catch { continue; }
                 double delta = oldY - newY;
                 if (Math.Abs(delta) < 0.5) continue;
                 var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
@@ -711,7 +947,14 @@ namespace VolumeBuddy
             ToolTipService.SetToolTip(nameArea, "点击切换为默认设备");
             nameArea.MouseLeftButtonUp += (s, e) =>
             {
-                try { AudioService.SetDefaultDevice(d.Id); } catch { }
+                try
+                {
+                    AudioService.SetDefaultDevice(d.Id);
+                    // 先按用户意图把这一项置顶，不等系统回读/下一次 800ms 轮询
+                    if (isPlay) { _pendingPlayDefault = d.Id; _pendingPlayAt = DateTime.UtcNow; }
+                    else { _pendingRecDefault = d.Id; _pendingRecAt = DateTime.UtcNow; }
+                }
+                catch { }
                 RefreshAll();
             };
 

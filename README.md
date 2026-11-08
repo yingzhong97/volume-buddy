@@ -5,7 +5,7 @@
 ## 下载
 
 前往 [Releases](https://github.com/yingzhong97/volume-buddy/releases/latest) 下载
-`VolumeBuddy-v1.2-win-x64.zip`，解压后双击 `VolumeBuddy.exe` 即可。
+`VolumeBuddy-v1.3-win-x64.zip`，解压后双击 `VolumeBuddy.exe` 即可。
 
 运行需要 [.NET 8 桌面运行时](https://dotnet.microsoft.com/download/dotnet/8.0/runtime/desktop)（Windows 11 一般已自带）。
 

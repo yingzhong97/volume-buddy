@@ -106,8 +106,9 @@ namespace VolumeBuddy.Audio
             foreach (var g2 in list.GroupBy(d => d.Name).Where(g => g.Count() > 1))
                 foreach (var d in g2)
                     d.Name = $"{d.Name}（{d.Bus}）";
-            // 默认设备排最前
-            list.Sort((a, b) => b.IsDefault.CompareTo(a.IsDefault));
+            // 这里只按系统枚举顺序返回，不再按 IsDefault 排序：
+            // List.Sort 不稳定，且每次都从头重排会让切换默认设备时其余项莫名乱跳。
+            // 显示顺序由 MainWindow 基于上一次列表做「只把默认项抽到最前」的稳定重排。
             return list;
         }
 

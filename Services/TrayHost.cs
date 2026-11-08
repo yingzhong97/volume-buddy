@@ -15,6 +15,8 @@ namespace VolumeBuddy.Services
         static System.Windows.Forms.NotifyIcon _tray;
         static DispatcherTimer _warmTimer;   // 用字段持有，局部 timer 可能还没 tick 就被回收
         static long _lastToggleTick;
+        static long _lastHoverTick;
+        static bool _warmupDone;
 
         /// <summary>最近一次左键按下托盘图标的时刻（TickCount64），供失焦隐藏判定使用。</summary>
         public static long LastTrayInteractionAt { get; private set; }
@@ -38,6 +40,15 @@ namespace VolumeBuddy.Services
                 if (now - _lastToggleTick < 90) return;   // 过滤同一次物理点击的重复消息
                 _lastToggleTick = now;
                 TogglePanel();
+            };
+            // 鼠标移到托盘图标上、还没按下时，先把空闲 60 秒被 EmptyWorkingSet 换出的热页取回来。
+            // 这样「开机后隔很久第一次点」也不用边点边软缺页；1.5s 节流，避免连续 MouseMove 反复刷新。
+            _tray.MouseMove += (s, e) =>
+            {
+                long now = Environment.TickCount64;
+                if (now - _lastHoverTick < 1500) return;
+                _lastHoverTick = now;
+                App.PrewarmForClick();
             };
 
             var menu = new System.Windows.Forms.ContextMenuStrip();
@@ -63,18 +74,25 @@ namespace VolumeBuddy.Services
             if (win.PanelIsOpen) win.HideFromTray(); else win.ShowFromTray(false);
         }
 
-        /// <summary>空闲预热：后台创建窗口但不显示，让第一次点开没有冷启动感。</summary>
+        /// <summary>
+        /// 空闲预热。固定等 1200ms 在开机场景下不可靠：用户可能更早点击，也可能这段时间
+        /// UI 线程一直有消息让 idle 回调饿着。改成「第一个空闲时机 + 400ms 兜底」谁先到谁执行。
+        /// </summary>
         public static void WarmupLater()
         {
-            _warmTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
-            _warmTimer.Tick += (s, e) =>
-            {
-                _warmTimer.Stop();
-                try { App.EnsureWindow(); } catch { }
-                // 预热后不再立刻 EmptyWorkingSet：刚预热好的热页被换出，第一次点开反而更卡。
-                // 内存修剪统一交给 MainWindow 的「空闲 60 秒」计时器。
-            };
+            var dispatcher = System.Windows.Application.Current.Dispatcher;
+            dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(DoWarmup));
+            _warmTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+            _warmTimer.Tick += (s, e) => { _warmTimer.Stop(); DoWarmup(); };
             _warmTimer.Start();
+        }
+
+        static void DoWarmup()
+        {
+            if (_warmupDone) return;
+            _warmupDone = true;
+            try { _warmTimer?.Stop(); } catch { }
+            try { App.EnsureWindow().Warmup(); } catch { }
         }
 
         public static void Exit()

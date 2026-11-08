@@ -1,5 +1,6 @@
 using System.Linq;
 using System.Threading;
+using System.Windows.Threading;
 using VolumeBuddy.Services;
 
 namespace VolumeBuddy
@@ -21,6 +22,20 @@ namespace VolumeBuddy
             _window = w;
             Log("window built in " + sw.ElapsedMilliseconds + " ms");
             return w;
+        }
+
+        /// <summary>
+        /// 鼠标悬停托盘图标时调用：把空闲修剪换出的热页提前取回。
+        /// 用 Normal 优先级排在后续输入消息之前，确保按下图标前已经预热完。
+        /// </summary>
+        public static void PrewarmForClick()
+        {
+            var w = _window;
+            if (w == null) return;
+            w.Dispatcher.BeginInvoke(DispatcherPriority.Normal, new System.Action(() =>
+            {
+                try { w.TouchHotSet(); } catch { }
+            }));
         }
 
         static void Log(string msg)
